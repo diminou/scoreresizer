@@ -18,53 +18,74 @@ def mm_to_px(mm_w, mm_h, dpi):
     return (int(mm_w / 25.4 * dpi), int(mm_h / 25.4 * dpi))
 
 # --- Image Processing Functions ---
-
-def crop_margins_opencv(pil_img, padding=10):
+def crop_margins_opencv(pil_img, padding=10, aggressive=False):
     """
-    Detects the content area using OpenCV and crops the image.
-    Adds a small padding to avoid cutting off thin text edges.
+    Detects content area. 
+    If aggressive is True, it uses morphological opening to remove thin artifacts
+    and filters out small contours.
     """
-    # Convert PIL to OpenCV format (RGB)
     img = np.array(pil_img)
-    
-    # Convert to grayscale for thresholding
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     
-    # Binary threshold (assuming white background, darker text/artifacts)
-    # Otsu's thresholding automatically finds the best threshold value
+    # 1. Thresholding (Otsu)
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Dilate slightly to merge nearby noise/text into a block
-    kernel = np.ones((5, 5), np.uint8)
-    dilated = cv2.dilate(thresh, kernel, iterations=2)
-    
-    # Find contours
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 2. Morphological Operations
+    # Aggressive mode uses Opening to remove noise/specks
+    if aggressive:
+        # Define kernel (5x5 is good for removing scan dust)
+        kernel = np.ones((5, 5), np.uint8)
+        # MORPH_OPEN = Erosion followed by Dilation
+        # Erosion removes thin lines/noise. Dilation restores the size of remaining text.
+        cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    else:
+        # Standard mode: Dilate slightly to merge split characters only
+        kernel = np.ones((3, 3), np.uint8)
+        cleaned = cv2.dilate(thresh, kernel, iterations=1)
+
+    # 3. Find Contours
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if not contours:
-        return pil_img # No content found, return original
+        return pil_img
 
-    # Get the bounding box of all content combined
+    # 4. Filter Contours (Ignore small artifacts)
+    # Calculate a dynamic minimum area (e.g., 0.1% of the total image area)
+    # This prevents a single pixel of dust from setting the boundary.
+    img_area = gray.shape[0] * gray.shape[1]
+    
+    # If aggressive, we set a higher threshold for what counts as "content"
+    min_area_threshold = img_area * (0.02 if aggressive else 0.0001)
+    
     x_min, y_min = np.inf, np.inf
     x_max, y_max = -np.inf, -np.inf
-    
+    found_content = False
+
     for cnt in contours:
+        area = cv2.contourArea(cnt)
+        
+        # Skip if the contour is too small (noise)
+        if area < min_area_threshold:
+            continue
+            
+        found_content = True
         x, y, w, h = cv2.boundingRect(cnt)
         x_min = min(x_min, x)
         y_min = min(y_min, y)
         x_max = max(x_max, x + w)
         y_max = max(y_max, y + h)
-    
-    # Apply padding
+
+    if not found_content:
+        return pil_img
+
+    # 5. Apply Padding and Crop
     h_img, w_img = img.shape[:2]
     x_min = max(0, x_min - padding)
     y_min = max(0, y_min - padding)
     x_max = min(w_img, x_max + padding)
     y_max = min(h_img, y_max + padding)
     
-    # Crop using PIL
-    cropped = pil_img.crop((x_min, y_min, x_max, y_max))
-    return cropped
+    return pil_img.crop((x_min, y_min, x_max, y_max))
 
 def rotate_90_ccw(pil_img):
     return pil_img.transpose(Image.ROTATE_90)
@@ -170,11 +191,12 @@ def collate_to_a3(images, start_right=False, dpi=300):
 @click.argument('output_pdf', type=click.Path())
 @click.option('--dpi', default=300, help='DPI for processing and output (default: 300)')
 @click.option('--crop', is_flag=True, help='Auto-crop margins using OpenCV')
+@click.option('--aggressive-crop', is_flag=True, help='Use stronger filters to ignore edge artifacts (requires --crop)')
 @click.option('--rotate', is_flag=True, help='Rotate 90 degrees clockwise')
 @click.option('--rescale-a4', is_flag=True, help='Rescale pages to fit A4 optimally')
 @click.option('--collate-a3', is_flag=True, help='Collate pages onto A3 sheets')
 @click.option('--start-right', is_flag=True, help='If collating, use booklet order (4,1 then 2,3)')
-def main(input_pdf, output_pdf, dpi, crop, rotate, rescale_a4, collate_a3, start_right):
+def main(input_pdf, output_pdf, dpi, crop, aggressive_crop, rotate, rescale_a4, collate_a3, start_right):
     """
     Process a scanned PDF with various image manipulation options.
     """
@@ -197,10 +219,13 @@ def main(input_pdf, output_pdf, dpi, crop, rotate, rescale_a4, collate_a3, start
     for i, img in enumerate(images):
         current_img = img
         
+        # Determine if we should crop aggressively
+        do_aggressive = crop and aggressive_crop
+
         # 2. Crop
         if crop:
-            click.echo(f"Page {i+1}: Cropping...")
-            current_img = crop_margins_opencv(current_img)
+            click.echo(f"Page {i+1}: Cropping (Aggressive={do_aggressive})...")
+            current_img = crop_margins_opencv(current_img, padding=10, aggressive=do_aggressive)
         
         # 3. Rotate
         if rotate:
