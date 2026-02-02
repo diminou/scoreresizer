@@ -150,7 +150,7 @@ def collate_to_a3(images, start_right=False, dpi=300):
         all_pairs = sheet1_pairs + sheet2_pairs
         
         for left_img, right_img in all_pairs:
-            a3_canvas = Image.new('RGB', (a3_w_px, a3_h_px), 'white')
+            a3_canvas = Image.new('RGB', (a3_h_px, a3_w_px), 'white')
             
             # Paste Left
             # Note: A3 width is double A4 width at same DPI
