@@ -196,7 +196,8 @@ def collate_to_a3(images, start_right=False, dpi=300):
 @click.option('--rescale-a4', is_flag=True, help='Rescale pages to fit A4 optimally')
 @click.option('--collate-a3', is_flag=True, help='Collate pages onto A3 sheets')
 @click.option('--start-right', is_flag=True, help='If collating, use booklet order (4,1 then 2,3)')
-def main(input_pdf, output_pdf, dpi, crop, aggressive_crop, rotate, rescale_a4, collate_a3, start_right):
+@click.option('--edge-crop', type=int, default=0, help='Crop N pixels from all edges of original scans before processing')
+def main(input_pdf, output_pdf, dpi, crop, aggressive_crop, rotate, rescale_a4, collate_a3, start_right, edge_crop):
     """
     Process a scanned PDF with various image manipulation options.
     """
@@ -218,6 +219,12 @@ def main(input_pdf, output_pdf, dpi, crop, aggressive_crop, rotate, rescale_a4, 
 
     for i, img in enumerate(images):
         current_img = img
+        
+        # 1. Edge crop (applied before other processing)
+        if edge_crop > 0:
+            click.echo(f"Page {i+1}: Edge cropping {edge_crop}px...")
+            w, h = current_img.size
+            current_img = current_img.crop((edge_crop, edge_crop, w - edge_crop, h - edge_crop))
         
         # Determine if we should crop aggressively
         do_aggressive = crop and aggressive_crop
